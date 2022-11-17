@@ -1,0 +1,280 @@
+---
+title: "Text as data: Assignment 2"
+output:
+  html_document: default
+  pdf_document: default
+date: '2022-11-16'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(quanteda)
+library(quanteda.textstats)
+library(topicmodels)
+library(tidytext)
+library(plyr)
+library(dplyr)
+
+```
+
+## Data acquisition, description, and preparation
+
+*Bring together a dataset from the WZB.
+What years, countries and parties are included in the dataset? How many texts do you have for each of these?
+Prepare your data for topic modelling by creating a document feature matrix. Describe the choices you make
+here, and comment on how these might affect your final result.*
+
+```{r}
+#we load our dataset
+df <- read.csv("us-manifestos-environment.csv" , sep = ";")
+
+#and create a corpus
+corp <- corpus(df)
+corp
+
+```
+
+The dataset is downloaded from the WZB website. It consists of National Political Party Platforms from **US Presidential Elections from 2008, 2012, 2016, and 2020**. As there are two main political parties in the US, Democratic and Republic, there are a total of **8 documents**. The data is manipulated so that it **only consists of the sections on the energy and environment** in the respective documents. The purpose of this manipulation is to focus on how each party chose to address the issue and to understand what aspect of it was forefront, which will be further discussed in the research question section.
+
+```{r}
+#we create a document-feature matrix
+dfmat <- df$text %>%
+  tokens(remove_punct = T) %>%
+  tokens_remove(pattern=stopwords("en")) %>%
+  dfm()  %>%
+  dfm_trim(min_termfreq = 5)
+
+rownames(dfmat) <- with(df, paste (cmp_code, eu_code))
+dfmat
+
+```
+
+The **document-feature matrix (dfm)** is created after punctuation and stopwords are removed. Before settling on this version, couple different versions with stemmed and lemmatized tokens were explored. However, as the documents are already energy/environment specific, grouping tokens offered unnuanced results. Keeping the tokens as they are helped with determining the messaging and focus of 4 main topics that are explored in following sections. Infrequent terms were removed to make the dfm trim.
+
+## Research question
+
+*Describe a research question you want to explore with topic modelling. Comment on how answerable this is
+with the methods and data at your disposal.*
+
+This model aims to **explore the subtopics and policies covered in energy and environment sections of the US Party Platforms**. Its goal is to observe how each party has changed the way they approach these issues over the years. As energy and environment are both complex and hot topics, the model expects to **reveal how subtopics such as global climate change, deforestation, biodiversity, agricultural policies, and fossil fuels appear in these manifestos**. Ideally, the data should give a sense of the focus of these parties, although it might fail to capture certain scientific discussions and policies due to the documents being written for and shared with non-specialists.
+
+## Topic model development
+
+*Create a topic model using your data. Explain to a non-specialist what the topic model does. Comment on
+the choices you make here in terms of hyperparameter selection and model choice. How might these affect
+your results and the ability to answer your research question?*
+
+A topic model is a type of statistical model used in natural language processing for identifying **"topics"** that appear in a group of documents. As one would expect certain words to appear more frequently when a specific topic is discussed, one can expect to identify a document's topics based on those words. A document often covers a variety of topics in varying degrees, hence topic model aims to identify these topics and reveal a breakdown of those topics successfully.
+
+For this research question, the model is created using **Latent Dirichlet Allocation (LDA)**, one of the most popular techniques for topic modeling. LDA is a Bayesian (probabilistic) model, as opposed to the other most popular model Non-negative Matrix Factorization (NMF), which uses matrix factorization and multivariate analysis. LDA was picked over NMF based on suggestions that it works better with longer documents such as articles, policy briefs, and books where there is no prior knowledge of topics. NMF is mostly favored for shorter texts such as titles, tweets, and abstracts.
+
+Although there are multiple hyperparameters that can be fine-tuned (such as number of features and prior parameters of alpha and beta), the most important hyperparameter for LDA is determining **the number of topics**. Since there are only 8 documents with the same broader issue, an high number of topics tended to assign 1-2 distinct topics to each document and did not capture any overlaps. The number of topics that were explored were 5, 8, 12, and 16. However, once the number was decreased, a few clear themes have emerged. **Thus, for the following LDA model, number of topics was determined as 4.**
+
+```{r}
+#we create a topic model using LDA
+lda <- LDA(dfmat, k = 4, control = list(seed = 0))
+
+#dimensions of beta attribute, where topic-term matrix is stored
+print(dim(lda@beta))
+
+#dimensions of gamma attribute, where document-term matrix is stored
+print(dim(lda@gamma))
+
+```
+
+Using tidytext, we get the **topic-term probabilities**, displaying the top 8 terms in each topic.
+
+```{r}
+#we get our topic-term data
+topic_term <- tidy(lda, matrix="beta") %>%
+  group_by(topic) %>%
+  slice_max(beta, n = 8) %>%
+  ungroup() %>%
+  arrange(topic, -beta)
+topic_term
+
+```
+```{r}
+#top 8 term of each topic
+wordplot <- topic_term %>%
+  mutate(term = reorder_within(term, beta, topic)) %>%
+  ggplot(aes(beta, term, fill = factor(topic))) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ topic, scales = "free") +
+  scale_y_reordered() +
+  labs(title = "Top 8 terms of each topic", subtitle = "Sections on energy and the environment in US Party Platforms, 2008-2020")
+
+wordplot
+
+```
+
+Using tidytext, we get the **document-topic probabilities**, displaying composition of each document by topic.
+
+```{r}
+#we get our doc-topic data
+doc_topics_01 <- tidy(lda, matrix="gamma")
+
+df$document <- paste(df$cmp_code, df$eu_code)
+df <- df %>% dplyr::rename("year" = "cmp_code")
+df <- df %>% dplyr::rename("party" = "eu_code")
+
+doc_topics_02 <- merge(doc_topics_01,df,by="document",all=TRUE)
+doc_topics_02 <- select(doc_topics_02, -text)
+doc_topics_02
+```
+## Topic model description
+
+*Describe the topic model. What topics does it contain? How are these distributed across the data*
+
+The **LDA model reveals 4 topics** surrounding the energy and environment related issues. The topics are defined by their distinct words instead top 3 in order to avoid confusion and specify themes:
+
+* T1: climate, change, global
+* T2: agriculture, food, farmers
+* T3: clean, communities, pollution
+* T4: oil, gas, resources
+
+```{r}
+filter(doc_topics_02, topic == 1)
+```
+
+**T1**, which centers on **global climate change**, is the overwhelming focus of both parties in 2008. It observes a sharp fall in the following terms, but makes a reappearance in the Democratic agenda in 2020.
+
+```{r}
+filter(doc_topics_02, topic == 2)
+```
+
+**T2**, which focuses on **agricultural policies**, is the central agenda of the Republican party in 2016 and 2020, but fail to take up spotlight anywhere else.
+
+```{r}
+filter(doc_topics_02, topic == 3)
+```
+
+**T3** puts the focus on **communities and their struggles such as jobs and pollution**. It appears in the Democratic agenda in 2012 and stays there during the next 2 terms. Republicans do not include it in their agenda.
+
+```{r}
+filter(doc_topics_02, topic == 4)
+```
+
+Last but not least, **T4's main focus are fossil fuels such as oil and gas**, which make up the main topic of 2012's Republican agenda.
+
+##  Answering your research question
+
+*Use your topic model to answer your research question by showing plots or statistical results. Discuss the
+implications of what you find, and any limitations inherent in your approach. Discuss how the work could be
+improved upon in future research.*
+
+As presented by the plots below, the Democrats had a relatively consistent messaging in the past 4 presidential terms, whereas Republicans focused on a variety of topics over the year. Here are is the plot showing Democratic Party Platforms: 
+
+```{r}
+#a look at the Democratic Party
+democratic <- filter(doc_topics_02, party == "Democratic")
+democratic
+
+plot1 <- ggplot(filter(democratic, topic %in% c(1:4)), aes(x = year, y = gamma, group = as.factor(topic), colour = topic, fill = topic)) +
+  scale_x_continuous(limit = c(2007, 2021))+
+  geom_point() +
+  geom_line() +
+  theme_bw() +
+  labs(title = "Breakdown of topics for the Democratic Party", subtitle = "2008-2020")
+
+plot1
+
+```
+
+
+The results show that the discourse around the environment is everchanging. Back in 2008, more than a decade ago, the focus was on global climate change and America's part as well as role in it. However, as the time progressed, the discussion had become more nuanced. Democrats focused more on how Americans were affected by environmental and energy issues in their local communities. As seen above, subtopics such as agriculture and fossil fuels were never a direct part of their messaging in their Party Platforms. However, global climate change made a comeback in 2020, showing an overall consistency in Democratic topics.
+
+Here are is the plot showing Republican Party Platforms: 
+
+```{r}
+#a look at the Republican Party
+republican <- filter(doc_topics_02, party == "Republican")
+republican
+
+plot2 <- ggplot(filter(republican, topic %in% c(1:4)), aes(x= year, y = gamma, group= topic, colour=topic, fill=topic)) +
+  scale_x_continuous(limit = c(2007, 2021))+
+  geom_point() +
+  geom_line() +
+  theme_bw() +
+  labs(title = "Breakdown of topics for the Republican Party", subtitle = "2008-2020")
+
+plot2
+
+```
+
+
+Republicans addressed the same topics and shared an agenda with Democrats in 2008. However, their focus have shifted to fossil fuels and the oil industry in 2012. In both runs for Trump, 2016 and 2020, the focus was on agricultural policy and regulation. The previously mentioned topics did not make comebacks in recent terms.
+
+The following plots present a time series snapshot of each topic:
+```{r}
+#a look at T1
+topic1 <- filter(doc_topics_02, topic == 1)
+
+plott1 <- ggplot(topic1, aes(x = year, y = gamma, group = party, colour = party, fill = party)) +
+  scale_x_continuous(limit = c(2007, 2021))+
+  geom_point() +
+  geom_line() +
+  theme_bw() +
+  labs(title = "Evolution of T1 in US Party Platforms", subtitle = "T1: climate change global, 2008-2020")
+
+plott1
+
+```
+
+```{r}
+#a look at T2
+topic2 <- filter(doc_topics_02, topic == 2)
+
+plott2 <- ggplot(topic2, aes(x = year, y = gamma, group = party, colour = party, fill = party)) +
+  scale_x_continuous(limit = c(2007, 2021))+
+  geom_point() +
+  geom_line() +
+  theme_bw() +
+  labs(title = "Evolution of T2 in US Party Platforms", subtitle = "T2: agriculture food farmers, 2008-2020")
+
+plott2
+```
+
+```{r}
+#a look at T3
+topic3 <- filter(doc_topics_02, topic == 3)
+
+plott3 <- ggplot(topic3, aes(x = year, y = gamma, group = party, colour = party, fill = party)) +
+  scale_x_continuous(limit = c(2007, 2021))+
+  geom_point() +
+  geom_line() +
+  theme_bw() +
+  labs(title = "Evolution of T3 in US Party Platforms", subtitle = "T3: clean communities pollution, 2008-2020")
+
+plott3
+```
+```{r}
+#a look at T4
+topic4 <- filter(doc_topics_02, topic == 4)
+
+plott4 <- ggplot(topic4, aes(x = year, y = gamma, group = party, colour = party, fill = party)) +
+  scale_x_continuous(limit = c(2007, 2021))+
+  geom_point() +
+  geom_line() +
+  theme_bw() +
+  labs(title = "Evolution of T4 in US Party Platforms", subtitle = "T4: oil gas resources, 2008-2020")
+
+plott4
+```
+
+
+There are a few obvious limitations on the model, the most obvious one being the absence of specific concerns mentioned in Party Platforms despite both parties showing an interest on them in political spheres. Those are discussion over environmental or energy issues such as biodiversity loss or fracking. This is likely because these documents are prepared to reach the masses and they assume no prior knowledge from their audience on these issues. Hence, they stick to a broader topic still and do not mention specific issues that the parties hope to achieve when in office. Another limitation here is the low number of documents. However, Party Platforms going further than 2008 have a very limited and old view on environmental issues. What could possible improve upon the research would be to specifically look at legislation/bills proposed by the parties in Congress to capture the specificity. Despite these limitations, the results show a fairly apt representation of parties' approach to environmental issues. 
+
+##  References
+
+* Silge, Julia Silge et al. “6 Topic Modeling: Text Mining with R.” 6 Topic Modeling | Text Mining with R, https://www.tidytextmining.com/topicmodeling. 
+* Naushan, Haaya. Topic Modeling with Latent Dirichlet Allocation. https://towardsdatascience.com/topic-modeling-with-latent-dirichlet-allocation-e7ff75290f8. 
+* Beheshti, Nima. Topic Modeling with Political Texts - towards Data Science. https://towardsdatascience.com/topic-modeling-with-political-texts-4a9b20b5e91.
+* Manifesto Project Database, https://manifesto-project.wzb.eu/.
+* Lectures slides.
+
+
+
+
